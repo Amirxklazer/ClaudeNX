@@ -56,6 +56,9 @@ button:disabled{opacity:.5}.ok{color:#2fbf8f}.err{color:#e86e6e}
 <h2 id="t">Sign in</h2><p id="m">Connect your Puter account to your Switch.</p>
 <button id="b" onclick="go()">Sign in with Puter</button>
 </div>
+<script>
+if(!crypto.randomUUID){crypto.randomUUID=function(){var b=crypto.getRandomValues(new Uint8Array(16));b[6]=b[6]&15|64;b[8]=b[8]&63|128;var h=Array.prototype.map.call(b,function(x){return ('0'+x.toString(16)).slice(-2)}).join('');return h.slice(0,8)+'-'+h.slice(8,12)+'-'+h.slice(12,16)+'-'+h.slice(16,20)+'-'+h.slice(20)}}
+</script>
 <script src="https://js.puter.com/v2/"></script>
 <script>
 const k=new URLSearchParams(location.search).get('k')||'';
