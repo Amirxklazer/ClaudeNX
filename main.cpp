@@ -15,23 +15,29 @@
 #include "qrcodegen.hpp"
 
 static const int W = 1280, H = 720;
-static const int HEAD_H = 56, INPUT_Y = 636, CHAT_BOTTOM = 624;
-static const int SIDEBAR_W = 280, CHAT_X = SIDEBAR_W, CHAT_W = W - SIDEBAR_W;
+static const int SIDEBAR_W = 220, CHAT_X = SIDEBAR_W;
+static const int HEAD_H = 60, FOOTER_H = 60, CHAT_H = H - HEAD_H - FOOTER_H;
 
 static SDL_Renderer* R;
 static TTF_Font *fBody, *fSmall, *fTitle, *fBig;
 
-static const SDL_Color C_BG{38, 38, 36, 255}, C_SIDEBAR{52, 52, 49, 255}, C_PANEL{62, 62, 59, 255},
-    C_TEXT{236, 234, 228, 255}, C_DIM{150, 148, 140, 255}, C_ACC{217, 119, 87, 255},
-    C_ERR{232, 110, 110, 255}, C_CODETXT{205, 222, 195, 255}, C_WHITE{255, 255, 255, 255};
+static const SDL_Color 
+    C_BG{20, 20, 18, 255},
+    C_SIDEBAR{28, 28, 26, 255},
+    C_PANEL{40, 40, 38, 255},
+    C_INPUT{50, 50, 48, 255},
+    C_TEXT{235, 235, 230, 255},
+    C_DIM{140, 140, 135, 255},
+    C_ACC{217, 119, 87, 255},
+    C_ERR{231, 76, 60, 255},
+    C_WHITE{255, 255, 255, 255};
 
 static const char* DIR_PATH = "sdmc:/switch/ClaudeNX";
 static const char* CFG_PATH = "sdmc:/switch/ClaudeNX/config.txt";
 static const char* MODELS_PATH = "sdmc:/switch/ClaudeNX/models.txt";
 static const char* SYSTEM_PROMPT =
-    "You are Claude, running inside ClaudeNX on a Nintendo Switch. Replies show on a 1280x720 screen: "
-    "keep answers concise and plain, avoid markdown tables and heavy formatting. "
-    "For any code, always use fenced code blocks with a language tag.";
+    "You are Claude, running on a Nintendo Switch. Keep answers concise. "
+    "Use plain text and code blocks. No tables or complex markdown.";
 
 static void fillRect(int x, int y, int w, int h, SDL_Color c) {
     SDL_SetRenderDrawColor(R, c.r, c.g, c.b, c.a);
@@ -55,10 +61,12 @@ static void rrect(int x, int y, int w, int h, int r, SDL_Color c) {
     SDL_RenderFillRect(R, &m);
 }
 
-static void circle(int cx, int cy, int r, SDL_Color c) { rrect(cx - r, cy - r, 2 * r, 2 * r, r, c); }
+static void circle(int cx, int cy, int r, SDL_Color c) { 
+    rrect(cx - r, cy - r, 2 * r, 2 * r, r, c); 
+}
 
-static SDL_Texture* mkText(TTF_Font* f, std::string s, SDL_Color c, int wrap, int* w, int* h) {
-    if (s.empty()) s = " ";
+static SDL_Texture* mkText(TTF_Font* f, const std::string& s, SDL_Color c, int wrap, int* w, int* h) {
+    if (s.empty()) { *w = *h = 0; return nullptr; }
     SDL_Surface* sf = wrap > 0 ? TTF_RenderUTF8_Blended_Wrapped(f, s.c_str(), c, wrap)
                                : TTF_RenderUTF8_Blended(f, s.c_str(), c);
     if (!sf) return nullptr;
@@ -85,6 +93,7 @@ struct Block {
     SDL_Texture* tex = nullptr;
     int w = 0, h = 0;
 };
+
 struct Msg {
     std::string role, text;
     std::vector<Block> blocks;
@@ -93,8 +102,7 @@ struct Msg {
 };
 
 static void freeBlocks(Msg& m) {
-    for (auto& b : m.blocks)
-        if (b.tex) SDL_DestroyTexture(b.tex);
+    for (auto& b : m.blocks) if (b.tex) SDL_DestroyTexture(b.tex);
     m.blocks.clear();
     m.built = false;
 }
@@ -102,33 +110,31 @@ static void freeBlocks(Msg& m) {
 static std::string stripMd(std::string s) {
     size_t p;
     while ((p = s.find("**")) != std::string::npos) s.erase(p, 2);
+    while ((p = s.find("##")) != std::string::npos) s.erase(p, 2);
     s.erase(std::remove(s.begin(), s.end(), '`'), s.end());
-    size_t i = 0;
-    while (i < s.size() && s[i] == '#') i++;
-    if (i > 0 && i < s.size() && s[i] == ' ') s.erase(0, i + 1);
     return s;
 }
 
 static void buildBlocks(Msg& m) {
     freeBlocks(m);
     bool user = m.role == "user";
-    int wrapW = user ? CHAT_W - 120 : CHAT_W - 40;
+    int wrapW = W - CHAT_X - 80;
     SDL_Color col = m.role == "error" ? C_ERR : C_TEXT;
     bool inCode = false;
     std::string cur;
-    int curLines = 0;
 
     auto addBlock = [&](const std::string& s, bool code) {
+        if (s.empty()) return;
         Block b;
         b.code = code;
-        b.tex = mkText(fBody, s, code ? C_CODETXT : col, code ? CHAT_W - 80 : wrapW, &b.w, &b.h);
-        if (b.tex) m.blocks.push_back(b);
+        int w, h;
+        b.tex = mkText(fBody, s, code ? C_ACC : col, code ? W - CHAT_X - 40 : wrapW, &w, &h);
+        if (b.tex) { b.w = w; b.h = h; m.blocks.push_back(b); }
     };
     auto flush = [&]() {
         while (!cur.empty() && (cur.back() == '\n' || cur.back() == '\r')) cur.pop_back();
         if (!cur.empty()) addBlock(inCode ? cur : stripMd(cur), inCode);
         cur.clear();
-        curLines = 0;
     };
 
     std::istringstream is(m.text);
@@ -141,16 +147,10 @@ static void buildBlocks(Msg& m) {
             continue;
         }
         if (inCode) {
-            std::string t;
-            for (char ch : line) {
-                if (ch == '\t') t += "    ";
-                else t += ch;
-            }
-            cur += t + "\n";
-            if (++curLines >= 28) flush();
-        } else {
-            if (line.empty()) { flush(); continue; }
             cur += line + "\n";
+        } else {
+            if (line.empty()) { flush(); }
+            else { cur += line + " "; }
         }
     }
     flush();
@@ -165,38 +165,47 @@ static void blit(SDL_Texture* t, int x, int y, int w, int h) {
 
 static int drawMsg(Msg& m, int y, bool draw) {
     if (!m.built) buildBlocks(m);
+    int h = 0;
     if (m.role == "user") {
         int bw = 0, bh = 0;
-        for (auto& b : m.blocks) { bw = std::max(bw, b.w); bh += b.h + 8; }
-        bh -= 8;
-        int w = bw + 40, h = bh + 28, x = CHAT_X + CHAT_W - w - 20;
+        for (auto& b : m.blocks) { bw = std::max(bw, b.w); bh += b.h + 6; }
+        if (bh > 0) bh -= 6;
+        int w = std::min(bw + 32, W - CHAT_X - 40);
+        int x = W - w - 20;
+        h = bh + 24;
         if (draw) {
-            rrect(x, y, w, h, 18, C_ACC);
-            int yy = y + 14;
-            for (auto& b : m.blocks) { blit(b.tex, x + 20, yy, b.w, b.h); yy += b.h + 8; }
+            rrect(x, y, w, h, 16, C_ACC);
+            int yy = y + 12;
+            for (auto& b : m.blocks) { 
+                if (b.tex) { blit(b.tex, x + 16, yy, b.w, b.h); yy += b.h + 6; }
+            }
         }
-        return h + 26;
+        return h + 12;
     }
+    // Assistant message
     int yy = y;
-    if (draw) circle(CHAT_X + 26, y + 16, 7, C_ACC);
+    if (draw && !m.blocks.empty()) circle(CHAT_X + 20, y + 10, 6, C_ACC);
     for (auto& b : m.blocks) {
         if (b.code) {
-            int h = b.h + 24;
-            if (draw) { rrect(CHAT_X + 20, yy, CHAT_W - 40, h, 10, C_PANEL); blit(b.tex, CHAT_X + 40, yy + 12, b.w, b.h); }
-            yy += h + 10;
+            int bh = b.h + 16;
+            if (draw) {
+                rrect(CHAT_X + 20, yy, W - CHAT_X - 40, bh, 8, C_PANEL);
+                if (b.tex) blit(b.tex, CHAT_X + 30, yy + 8, b.w, b.h);
+            }
+            yy += bh + 8;
         } else {
-            if (draw) blit(b.tex, CHAT_X + 20, yy, b.w, b.h);
-            yy += b.h + 12;
+            if (draw && b.tex) blit(b.tex, CHAT_X + 20, yy, b.w, b.h);
+            yy += b.h + 6;
         }
     }
-    return yy - y + 18;
+    return yy - y + 8;
 }
 
 enum Screen { PAIR, CHAT };
 static Screen screen = PAIR;
 static std::vector<Msg> msgs;
-static std::string token, model = "claude-sonnet-4-5";
-static std::vector<std::string> models{"claude-sonnet-4-5", "claude-opus-4-5", "claude-haiku-4-5"};
+static std::string token, model = "claude-3-5-sonnet";
+static std::vector<std::string> models{"claude-3-5-sonnet", "claude-3-opus", "gpt-4"};
 static int mi = 0;
 static float scrollY = 0;
 static bool stick = true;
@@ -275,7 +284,7 @@ static void chatThread(void* arg) {
     bool ok = net::chat(j->tok, j->model, SYSTEM_PROMPT, j->hist, out, err);
     {
         std::lock_guard<std::mutex> g(mu);
-        pendReply = ok ? out : err;
+        pendReply = ok ? out : ("Error: " + err);
         replyOk = ok;
         replyReady = true;
     }
@@ -296,7 +305,7 @@ static void sendMsg(const std::string& t) {
         R_FAILED(threadStart(&chatThr))) {
         delete j;
         busy = false;
-        msgs.push_back({"error", "Could not start network thread"});
+        msgs.push_back({"error", "Thread error"});
         return;
     }
     chatThrValid = true;
@@ -319,21 +328,22 @@ static bool askText(const char* header, std::string& out) {
 
 static void drawPair(Uint32 tick) {
     fillRect(0, 0, W, H, C_BG);
-    rrect(330, 40, 620, 640, 28, C_PANEL);
+    rrect(250, 80, 780, 560, 24, C_SIDEBAR);
+    
     int w1 = 0, w2 = 0, hh = 0;
     TTF_SizeUTF8(fTitle, "Claude", &w1, &hh);
     TTF_SizeUTF8(fTitle, "NX", &w2, &hh);
     int tx = 640 - (w1 + w2) / 2;
-    text(fTitle, "Claude", tx, 70, C_WHITE);
-    text(fTitle, "NX", tx + w1, 70, C_ACC);
-    text(fSmall, "Scan with your phone to sign in with Puter", 640, 130, C_DIM, 1);
+    text(fTitle, "Claude", tx, 120, C_WHITE);
+    text(fTitle, "NX", tx + w1, 120, C_ACC);
+    text(fSmall, "Scan with your phone to sign in", 640, 180, C_DIM, 1);
 
     if (qr.empty()) {
-        text(fBody, "No Wi-Fi connection", 640, 330, C_ERR, 1);
+        text(fBody, "Waiting for Wi-Fi...", 640, 350, C_ERR, 1);
     } else {
-        int n = (int)qr.size(), quiet = 3, sc = std::max(4, 336 / (n + 2 * quiet));
-        int size = (n + 2 * quiet) * sc, x0 = 640 - size / 2, y0 = 175;
-        rrect(x0, y0, size, size, 10, C_WHITE);
+        int n = (int)qr.size(), quiet = 2, sc = std::max(3, 280 / (n + 2 * quiet));
+        int size = (n + 2 * quiet) * sc, x0 = 640 - size / 2, y0 = 220;
+        rrect(x0, y0, size, size, 8, C_WHITE);
         SDL_SetRenderDrawColor(R, 0, 0, 0, 255);
         for (int y = 0; y < n; y++)
             for (int x = 0; x < n; x++)
@@ -341,11 +351,10 @@ static void drawPair(Uint32 tick) {
                     SDL_Rect r{x0 + (x + quiet) * sc, y0 + (y + quiet) * sc, sc, sc};
                     SDL_RenderFillRect(R, &r);
                 }
-        text(fSmall, pairUrl, 640, y0 + size + 18, C_DIM, 1);
+        text(fSmall, pairUrl, 640, y0 + size + 16, C_DIM, 1);
     }
-    std::string dots(1 + (tick / 500) % 3, '.');
-    text(fBody, "Waiting for your phone" + dots, 640, 560, C_ACC, 1);
-    text(fSmall, token.empty() ? "Phone and Switch must be on the same Wi-Fi" : "B: back to chat", 640, 610, C_DIM, 1);
+    std::string dots(1 + (tick / 600) % 3, '.');
+    text(fBody, "Waiting for phone" + dots, 640, 530, C_ACC, 1);
 }
 
 static void drawChat(Uint32 tick) {
@@ -353,56 +362,64 @@ static void drawChat(Uint32 tick) {
     
     // Sidebar
     fillRect(0, 0, SIDEBAR_W, H, C_SIDEBAR);
-    int w = text(fTitle, "Claude", 16, 8, C_WHITE);
-    text(fTitle, "NX", 16 + w, 8, C_ACC);
+    text(fTitle, "Claude", 12, 12, C_WHITE);
+    text(fSmall, "NX", 90, 18, C_ACC);
     
-    rrect(12, 60, SIDEBAR_W - 24, 56, 16, C_PANEL);
-    text(fSmall, "New chat", SIDEBAR_W / 2, 77, C_TEXT, 1);
+    rrect(12, 60, SIDEBAR_W - 24, 48, 12, C_PANEL);
+    text(fSmall, "New chat", SIDEBAR_W / 2, 78, C_TEXT, 1);
     
-    text(fSmall, "Model", 16, 140, C_DIM);
-    rrect(12, 160, SIDEBAR_W - 24, 40, 12, C_PANEL);
-    text(fBody, model, SIDEBAR_W / 2, 172, C_TEXT, 1);
+    text(fSmall, "Model", 12, 130, C_DIM);
+    int mlen = 0, mh = 0;
+    TTF_SizeUTF8(fSmall, model.c_str(), &mlen, &mh);
+    rrect(12, 152, SIDEBAR_W - 24, 40, 8, C_PANEL);
+    text(fSmall, model.size() > 20 ? model.substr(0, 17) + "..." : model, SIDEBAR_W / 2, 166, C_TEXT, 1);
     
-    // Main chat area header
-    fillRect(CHAT_X, 0, CHAT_W, HEAD_H, C_BG);
-    fillRect(CHAT_X, HEAD_H - 1, CHAT_W, 1, C_PANEL);
-    text(fTitle, "Chat", CHAT_X + 20, 8, C_TEXT);
+    // Header
+    fillRect(CHAT_X, 0, W - CHAT_X, HEAD_H, C_BG);
+    text(fTitle, "Chat", CHAT_X + 20, 12, C_TEXT);
+    fillRect(CHAT_X, HEAD_H - 1, W - CHAT_X, 1, C_PANEL);
 
-    // Chat messages
-    int total = 20;
+    // Messages
+    int total = 16;
     for (auto& m : msgs) { m.h = drawMsg(m, 0, false); total += m.h; }
-    if (busy) total += 50;
-    int view = CHAT_BOTTOM - HEAD_H;
+    if (busy) total += 40;
+    int view = CHAT_H;
     float maxS = (float)std::max(0, total - view);
     if (stick) scrollY = maxS;
     scrollY = std::max(0.f, std::min(scrollY, maxS));
     if (scrollY >= maxS - 2) stick = true;
 
-    SDL_Rect clip{CHAT_X, HEAD_H, CHAT_W, view};
+    SDL_Rect clip{CHAT_X, HEAD_H, W - CHAT_X, view};
     SDL_RenderSetClipRect(R, &clip);
-    int y = HEAD_H + 20 - (int)scrollY;
+    int y = HEAD_H + 12 - (int)scrollY;
+    
     if (msgs.empty() && !busy) {
-        circle(CHAT_X + CHAT_W / 2, 270, 18, C_ACC);
-        text(fBig, "How can I help?", CHAT_X + CHAT_W / 2, 310, C_TEXT, 1);
-        text(fSmall, "Press A or tap below to type", CHAT_X + CHAT_W / 2, 372, C_DIM, 1);
+        circle(W / 2, HEAD_H + 120, 16, C_ACC);
+        text(fBig, "How can I help?", W / 2, HEAD_H + 180, C_TEXT, 1);
     }
+    
     for (auto& m : msgs) {
-        if (y + m.h > HEAD_H && y < CHAT_BOTTOM) drawMsg(m, y, true);
+        if (y + m.h > HEAD_H && y < HEAD_H + view) drawMsg(m, y, true);
         y += m.h;
     }
+    
     if (busy) {
-        circle(CHAT_X + 26, y + 16, 7, C_ACC);
-        text(fBody, std::string("Claude is thinking") + std::string(1 + (tick / 400) % 3, '.'), CHAT_X + 20, y + 2, C_DIM);
+        circle(CHAT_X + 20, y + 10, 6, C_ACC);
+        text(fBody, "Claude is thinking" + std::string(1 + (tick / 500) % 3, '.'), CHAT_X + 20, y + 2, C_DIM);
     }
     SDL_RenderSetClipRect(R, nullptr);
 
-    // Composer
-    rrect(CHAT_X + 12, INPUT_Y - 4, CHAT_W - 24, 56, 28, C_PANEL);
-    text(fBody, busy ? "Waiting for reply..." : "Message Claude...", CHAT_X + 20, INPUT_Y + 6, C_DIM);
-    circle(CHAT_X + CHAT_W - 32, INPUT_Y + 24, 20, busy ? C_PANEL : C_ACC);
-    text(fSmall, "A", CHAT_X + CHAT_W - 32, INPUT_Y + 12, C_WHITE, 1);
+    // Footer
+    fillRect(CHAT_X, H - FOOTER_H, W - CHAT_X, FOOTER_H, C_BG);
+    fillRect(CHAT_X, H - FOOTER_H, W - CHAT_X, 1, C_PANEL);
     
-    text(fSmall, "A Type  Y New  X Pair  ZL/ZR Model  Hold A Voice  Scroll  + Quit", W / 2, 698, C_DIM, 1);
+    rrect(CHAT_X + 12, H - FOOTER_H + 8, W - CHAT_X - 24, 44, 12, C_INPUT);
+    text(fBody, busy ? "Waiting..." : "Message Claude...", CHAT_X + 24, H - FOOTER_H + 16, C_DIM);
+    
+    circle(W - 32, H - FOOTER_H + 30, 18, busy ? C_PANEL : C_ACC);
+    text(fSmall, "A", W - 32, H - FOOTER_H + 22, C_WHITE, 1);
+    
+    text(fSmall, "A Type  Y New  X Pair  ZL/ZR Model  + Quit", CHAT_X + 20, H - 8, C_DIM);
 }
 
 int main(int, char**) {
@@ -436,8 +453,6 @@ int main(int, char**) {
 
         bool wasDown = false, dragged = false, tapInput = false;
         int startY = 0, lastY = 0, prevY = 0;
-        bool holdingA = false;
-        Uint32 holdStart = 0;
         while (appletMainLoop()) {
             padUpdate(&pad);
             u64 down = padGetButtonsDown(&pad), held = padGetButtons(&pad);
@@ -453,13 +468,13 @@ int main(int, char**) {
                 if (!wasDown) { startY = prevY = ty; dragged = false; }
                 else {
                     if (std::abs(ty - startY) > 12) dragged = true;
-                    if (dragged && screen == CHAT && startY < INPUT_Y - 8) { scrollY -= (ty - prevY); stick = false; }
+                    if (dragged && screen == CHAT && ty < H - FOOTER_H) { scrollY -= (ty - prevY); stick = false; }
                     prevY = ty;
                 }
                 lastY = ty;
                 wasDown = true;
             } else if (wasDown) {
-                if (!dragged && lastY >= INPUT_Y - 8 && screen == CHAT) tapInput = true;
+                if (!dragged && lastY >= H - FOOTER_H && screen == CHAT) tapInput = true;
                 wasDown = false;
             }
 
@@ -485,20 +500,9 @@ int main(int, char**) {
             if (screen == PAIR) {
                 if ((down & HidNpadButton_B) && !token.empty()) { net::stopServer(); screen = CHAT; }
             } else {
-                // Hold A for voice (placeholder)
-                if (held & HidNpadButton_A) {
-                    if (!holdingA) { holdingA = true; holdStart = SDL_GetTicks(); }
-                    if (SDL_GetTicks() - holdStart > 1000) {
-                        // TODO: Implement voice recording
-                    }
-                } else if (holdingA) {
-                    holdingA = false;
-                    // Release A - voice input complete or just a short tap
-                }
-                
-                if (((down & HidNpadButton_A) || tapInput) && !busy && !holdingA) {
+                if (((down & HidNpadButton_A) || tapInput) && !busy) {
                     std::string t;
-                    if (askText("Message Claude", t)) sendMsg(t);
+                    if (askText("Your message", t)) sendMsg(t);
                 }
                 if (down & HidNpadButton_Y) { for (auto& m : msgs) freeBlocks(m); msgs.clear(); }
                 if (down & HidNpadButton_X) enterPair();
@@ -509,9 +513,7 @@ int main(int, char**) {
                     saveCfg();
                 }
                 HidAnalogStickState rs = padGetStickPos(&pad, 1);
-                if (std::abs(rs.y) > 4000) { scrollY -= rs.y * 22.f / 32767.f; stick = false; }
-                if (held & HidNpadButton_Up) { scrollY -= 12; stick = false; }
-                if (held & HidNpadButton_Down) { scrollY += 12; }
+                if (std::abs(rs.y) > 4000) { scrollY -= rs.y * 16.f / 32767.f; stick = false; }
             }
 
             Uint32 tick = SDL_GetTicks();
