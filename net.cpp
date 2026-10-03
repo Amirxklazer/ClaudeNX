@@ -17,7 +17,7 @@ using json = nlohmann::json;
 namespace net {
 
 static const char* CA_PATH = "sdmc:/switch/ClaudeNX/cacert.pem";
-static const char* PUTER_URL = "https://api.puter.com/puterai/openai/v1/chat/completions";
+static const char* PUTER_DRIVERS_URL = "https://api.puter.com/drivers/call";
 
 bool init() {
     if (R_FAILED(socketInitializeDefault())) return false;
@@ -49,7 +49,7 @@ body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:c
 h1{margin:0;font-size:40px}h1 b{color:#d97757}
 .ic{width:84px;height:84px;margin:18px auto;border-radius:50%;background:#2a1a14;display:flex;align-items:center;justify-content:center;font-size:42px;color:#d97757}
 h2{margin:8px 0}p{color:#9aa0b4;line-height:1.5}
-button{margin-top:14px;padding:14px 28px;border:0;border-radius:14px;background:#d97757;color:#fff;font-size:18px;font-weight:600}
+button{margin-top:14px;padding:14px 28px;border:0;border-radius:14px;background:#d97757;color:#fff;font-size:18px;font-weight:600;cursor:pointer}
 button:disabled{opacity:.5}.ok{color:#2fbf8f}.err{color:#e86e6e}
 </style></head><body><div class="card">
 <h1>Claude<b>NX</b></h1><div class="ic" id="ic">&#10022;</div>
@@ -57,7 +57,16 @@ button:disabled{opacity:.5}.ok{color:#2fbf8f}.err{color:#e86e6e}
 <button id="b" onclick="go()">Sign in with Puter</button>
 </div>
 <script>
-if(!crypto.randomUUID){crypto.randomUUID=function(){var b=crypto.getRandomValues(new Uint8Array(16));b[6]=b[6]&15|64;b[8]=b[8]&63|128;var h=Array.prototype.map.call(b,function(x){return ('0'+x.toString(16)).slice(-2)}).join('');return h.slice(0,8)+'-'+h.slice(8,12)+'-'+h.slice(12,16)+'-'+h.slice(16,20)+'-'+h.slice(20)}}
+function randomUUID() {
+  var b = crypto.getRandomValues(new Uint8Array(16));
+  b[6] = (b[6] & 15) | 64;
+  b[8] = (b[8] & 63) | 128;
+  var h = Array.prototype.map.call(b, function(x) {
+    return ('0' + x.toString(16)).slice(-2);
+  }).join('');
+  return h.slice(0, 8) + '-' + h.slice(8, 12) + '-' + h.slice(12, 16) + '-' + h.slice(16, 20) + '-' + h.slice(20);
+}
+if (!crypto.randomUUID) crypto.randomUUID = randomUUID;
 </script>
 <script src="https://js.puter.com/v2/"></script>
 <script>
@@ -67,10 +76,11 @@ async function go(){
   $('b').disabled=true;$('t').className='';$('m').textContent='Opening Puter sign-in...';
   try{
     await puter.auth.signIn();
-    const u=await puter.auth.getUser();
+    const t=puter.authToken;
+    if(!t) throw new Error('Could not get auth token');
     const r=await fetch('/token?k='+encodeURIComponent(k),{method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({token:puter.authToken,user:u.username})});
+      body:JSON.stringify({token:t})});
     if(!r.ok) throw new Error('Switch refused - rescan the QR code');
     $('ic').textContent='✓';$('t').textContent='All set';$('t').className='ok';
     $('m').textContent='Your Puter token was sent to your Switch. The app is starting on your screen.';
@@ -87,7 +97,7 @@ static int g_srv = -1;
 static Thread g_thr;
 static bool g_thrValid = false;
 static std::string g_key;
-static std::function<void(const std::string&, const std::string&)> g_cb;
+static std::function<void(const std::string&)> g_cb;
 
 static void sendAll(int fd, const std::string& s) {
     size_t o = 0;
@@ -157,8 +167,7 @@ static void handle(int fd) {
             reply(fd, 400, "application/json", "{\"ok\":false}");
             return;
         }
-        std::string user = (j.contains("user") && j["user"].is_string()) ? j["user"].get<std::string>() : "";
-        if (g_cb) g_cb(j["token"].get<std::string>(), user);
+        if (g_cb) g_cb(j["token"].get<std::string>());
         reply(fd, 200, "application/json", "{\"ok\":true}");
         return;
     }
@@ -180,7 +189,7 @@ static void serverThread(void*) {
     }
 }
 
-bool startServer(const std::string& key, std::function<void(const std::string&, const std::string&)> cb) {
+bool startServer(const std::string& key, std::function<void(const std::string&)> cb) {
     if (g_run) { g_key = key; g_cb = cb; return true; }
     g_key = key; g_cb = cb;
     g_srv = socket(AF_INET, SOCK_STREAM, 0);
@@ -219,7 +228,7 @@ bool chat(const std::string& token, const std::string& model, const std::string&
     json msgs = json::array();
     msgs.push_back({{"role", "system"}, {"content", system}});
     for (auto& m : hist) msgs.push_back({{"role", m.role}, {"content", m.text}});
-    json req = {{"model", model}, {"messages", msgs}, {"stream", false}};
+    json req = {{"driver", "ai-chat"}, {"messages", msgs}};
     std::string body = req.dump(-1, ' ', false, json::error_handler_t::replace);
 
     CURL* c = curl_easy_init();
@@ -228,7 +237,7 @@ bool chat(const std::string& token, const std::string& model, const std::string&
     curl_slist* h = nullptr;
     h = curl_slist_append(h, ("Authorization: Bearer " + token).c_str());
     h = curl_slist_append(h, "Content-Type: application/json");
-    curl_easy_setopt(c, CURLOPT_URL, PUTER_URL);
+    curl_easy_setopt(c, CURLOPT_URL, PUTER_DRIVERS_URL);
     curl_easy_setopt(c, CURLOPT_HTTPHEADER, h);
     curl_easy_setopt(c, CURLOPT_POSTFIELDS, body.c_str());
     curl_easy_setopt(c, CURLOPT_POSTFIELDSIZE, (long)body.size());
@@ -253,15 +262,15 @@ bool chat(const std::string& token, const std::string& model, const std::string&
 
     json j = json::parse(resp, nullptr, false);
     if (!j.is_discarded() && j.is_object()) {
+        if (j.contains("result") && j["result"].is_string()) {
+            out = j["result"].get<std::string>();
+            return true;
+        }
         if (j.contains("choices") && j["choices"].is_array() && !j["choices"].empty()) {
             auto& m = j["choices"][0]["message"];
-            if (m.contains("content")) {
-                if (m["content"].is_string()) { out = m["content"].get<std::string>(); return true; }
-                if (m["content"].is_array()) {
-                    for (auto& part : m["content"])
-                        if (part.contains("text") && part["text"].is_string()) out += part["text"].get<std::string>();
-                    if (!out.empty()) return true;
-                }
+            if (m.contains("content") && m["content"].is_string()) {
+                out = m["content"].get<std::string>();
+                return true;
             }
         }
         if (j.contains("error")) {

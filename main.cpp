@@ -16,12 +16,12 @@
 
 static const int W = 1280, H = 720;
 static const int HEAD_H = 56, INPUT_Y = 636, CHAT_BOTTOM = 624;
-static const int CX = 200, CW = 880;
+static const int SIDEBAR_W = 280, CHAT_X = SIDEBAR_W, CHAT_W = W - SIDEBAR_W;
 
 static SDL_Renderer* R;
 static TTF_Font *fBody, *fSmall, *fTitle, *fBig;
 
-static const SDL_Color C_BG{38, 38, 36, 255}, C_PANEL{52, 52, 49, 255}, C_CODE{24, 24, 23, 255},
+static const SDL_Color C_BG{38, 38, 36, 255}, C_SIDEBAR{52, 52, 49, 255}, C_PANEL{62, 62, 59, 255},
     C_TEXT{236, 234, 228, 255}, C_DIM{150, 148, 140, 255}, C_ACC{217, 119, 87, 255},
     C_ERR{232, 110, 110, 255}, C_CODETXT{205, 222, 195, 255}, C_WHITE{255, 255, 255, 255};
 
@@ -69,7 +69,6 @@ static SDL_Texture* mkText(TTF_Font* f, std::string s, SDL_Color c, int wrap, in
     return t;
 }
 
-// align: 0 left, 1 center (x is center)
 static int text(TTF_Font* f, const std::string& s, int x, int y, SDL_Color c, int align = 0) {
     if (s.empty()) return 0;
     int w, h;
@@ -87,7 +86,7 @@ struct Block {
     int w = 0, h = 0;
 };
 struct Msg {
-    std::string role, text;  // user | assistant | error
+    std::string role, text;
     std::vector<Block> blocks;
     bool built = false;
     int h = 0;
@@ -113,7 +112,7 @@ static std::string stripMd(std::string s) {
 static void buildBlocks(Msg& m) {
     freeBlocks(m);
     bool user = m.role == "user";
-    int wrapW = user ? 640 : CW;
+    int wrapW = user ? CHAT_W - 120 : CHAT_W - 40;
     SDL_Color col = m.role == "error" ? C_ERR : C_TEXT;
     bool inCode = false;
     std::string cur;
@@ -122,7 +121,7 @@ static void buildBlocks(Msg& m) {
     auto addBlock = [&](const std::string& s, bool code) {
         Block b;
         b.code = code;
-        b.tex = mkText(fBody, s, code ? C_CODETXT : col, code ? CW - 40 : wrapW, &b.w, &b.h);
+        b.tex = mkText(fBody, s, code ? C_CODETXT : col, code ? CHAT_W - 80 : wrapW, &b.w, &b.h);
         if (b.tex) m.blocks.push_back(b);
     };
     auto flush = [&]() {
@@ -170,23 +169,23 @@ static int drawMsg(Msg& m, int y, bool draw) {
         int bw = 0, bh = 0;
         for (auto& b : m.blocks) { bw = std::max(bw, b.w); bh += b.h + 8; }
         bh -= 8;
-        int w = bw + 40, h = bh + 28, x = CX + CW - w;
+        int w = bw + 40, h = bh + 28, x = CHAT_X + CHAT_W - w - 20;
         if (draw) {
-            rrect(x, y, w, h, 18, C_PANEL);
+            rrect(x, y, w, h, 18, C_ACC);
             int yy = y + 14;
             for (auto& b : m.blocks) { blit(b.tex, x + 20, yy, b.w, b.h); yy += b.h + 8; }
         }
         return h + 26;
     }
     int yy = y;
-    if (draw) circle(CX - 26, y + 16, 7, C_ACC);
+    if (draw) circle(CHAT_X + 26, y + 16, 7, C_ACC);
     for (auto& b : m.blocks) {
         if (b.code) {
             int h = b.h + 24;
-            if (draw) { rrect(CX, yy, CW, h, 10, C_CODE); blit(b.tex, CX + 20, yy + 12, b.w, b.h); }
+            if (draw) { rrect(CHAT_X + 20, yy, CHAT_W - 40, h, 10, C_PANEL); blit(b.tex, CHAT_X + 40, yy + 12, b.w, b.h); }
             yy += h + 10;
         } else {
-            if (draw) blit(b.tex, CX, yy, b.w, b.h);
+            if (draw) blit(b.tex, CHAT_X + 20, yy, b.w, b.h);
             yy += b.h + 12;
         }
     }
@@ -196,15 +195,15 @@ static int drawMsg(Msg& m, int y, bool draw) {
 enum Screen { PAIR, CHAT };
 static Screen screen = PAIR;
 static std::vector<Msg> msgs;
-static std::string token, userName, model = "claude-sonnet-4-5";
-static std::vector<std::string> models{"claude-sonnet-4-5", "claude-opus-4-5", "claude-haiku-4-5", "claude-sonnet-4"};
+static std::string token, model = "claude-sonnet-4-5";
+static std::vector<std::string> models{"claude-sonnet-4-5", "claude-opus-4-5", "claude-haiku-4-5"};
 static int mi = 0;
 static float scrollY = 0;
 static bool stick = true;
 
 static std::mutex mu;
 static bool tokenReady = false, replyReady = false, replyOk = false;
-static std::string pendTok, pendUser, pendReply;
+static std::string pendTok, pendReply;
 static std::atomic<bool> busy{false};
 static Thread chatThr;
 static bool chatThrValid = false;
@@ -216,7 +215,7 @@ static void saveCfg() {
     mkdir(DIR_PATH, 0777);
     FILE* f = fopen(CFG_PATH, "w");
     if (!f) return;
-    fprintf(f, "token=%s\nuser=%s\nmodel=%s\n", token.c_str(), userName.c_str(), model.c_str());
+    fprintf(f, "token=%s\nmodel=%s\n", token.c_str(), model.c_str());
     fclose(f);
 }
 
@@ -236,7 +235,6 @@ static void loadCfg() {
         std::string k = l.substr(0, e), v = l.substr(e + 1);
         while (!v.empty() && (v.back() == '\r' || v.back() == '\n')) v.pop_back();
         if (k == "token") token = v;
-        else if (k == "user") userName = v;
         else if (k == "model") model = v;
     }
     auto it = std::find(models.begin(), models.end(), model);
@@ -258,10 +256,9 @@ static void enterPair() {
         for (int y = 0; y < q.getSize(); y++)
             for (int x = 0; x < q.getSize(); x++) qr[y][x] = q.getModule(x, y);
     }
-    net::startServer(key, [](const std::string& t, const std::string& u) {
+    net::startServer(key, [](const std::string& t) {
         std::lock_guard<std::mutex> g(mu);
         pendTok = t;
-        pendUser = u;
         tokenReady = true;
     });
     screen = PAIR;
@@ -353,14 +350,25 @@ static void drawPair(Uint32 tick) {
 
 static void drawChat(Uint32 tick) {
     fillRect(0, 0, W, H, C_BG);
-    int w = text(fTitle, "Claude", 28, 8, C_WHITE);
-    text(fTitle, "NX", 28 + w, 8, C_ACC);
-    std::string right = model + (userName.empty() ? "" : "  |  " + userName);
-    int tw = 0, th = 0;
-    TTF_SizeUTF8(fSmall, right.c_str(), &tw, &th);
-    text(fSmall, right, W - 28 - tw, 18, C_DIM);
-    fillRect(0, HEAD_H - 1, W, 1, C_PANEL);
+    
+    // Sidebar
+    fillRect(0, 0, SIDEBAR_W, H, C_SIDEBAR);
+    int w = text(fTitle, "Claude", 16, 8, C_WHITE);
+    text(fTitle, "NX", 16 + w, 8, C_ACC);
+    
+    rrect(12, 60, SIDEBAR_W - 24, 56, 16, C_PANEL);
+    text(fSmall, "New chat", SIDEBAR_W / 2, 77, C_TEXT, 1);
+    
+    text(fSmall, "Model", 16, 140, C_DIM);
+    rrect(12, 160, SIDEBAR_W - 24, 40, 12, C_PANEL);
+    text(fBody, model, SIDEBAR_W / 2, 172, C_TEXT, 1);
+    
+    // Main chat area header
+    fillRect(CHAT_X, 0, CHAT_W, HEAD_H, C_BG);
+    fillRect(CHAT_X, HEAD_H - 1, CHAT_W, 1, C_PANEL);
+    text(fTitle, "Chat", CHAT_X + 20, 8, C_TEXT);
 
+    // Chat messages
     int total = 20;
     for (auto& m : msgs) { m.h = drawMsg(m, 0, false); total += m.h; }
     if (busy) total += 50;
@@ -370,29 +378,31 @@ static void drawChat(Uint32 tick) {
     scrollY = std::max(0.f, std::min(scrollY, maxS));
     if (scrollY >= maxS - 2) stick = true;
 
-    SDL_Rect clip{0, HEAD_H, W, view};
+    SDL_Rect clip{CHAT_X, HEAD_H, CHAT_W, view};
     SDL_RenderSetClipRect(R, &clip);
     int y = HEAD_H + 20 - (int)scrollY;
     if (msgs.empty() && !busy) {
-        circle(640, 270, 18, C_ACC);
-        text(fBig, "How can I help?", 640, 310, C_TEXT, 1);
-        text(fSmall, "Press A or tap the box below to type", 640, 372, C_DIM, 1);
+        circle(CHAT_X + CHAT_W / 2, 270, 18, C_ACC);
+        text(fBig, "How can I help?", CHAT_X + CHAT_W / 2, 310, C_TEXT, 1);
+        text(fSmall, "Press A or tap below to type", CHAT_X + CHAT_W / 2, 372, C_DIM, 1);
     }
     for (auto& m : msgs) {
         if (y + m.h > HEAD_H && y < CHAT_BOTTOM) drawMsg(m, y, true);
         y += m.h;
     }
     if (busy) {
-        circle(CX - 26, y + 16, 7, C_ACC);
-        text(fBody, std::string("Claude is thinking") + std::string(1 + (tick / 400) % 3, '.'), CX, y + 2, C_DIM);
+        circle(CHAT_X + 26, y + 16, 7, C_ACC);
+        text(fBody, std::string("Claude is thinking") + std::string(1 + (tick / 400) % 3, '.'), CHAT_X + 20, y + 2, C_DIM);
     }
     SDL_RenderSetClipRect(R, nullptr);
 
-    rrect(CX - 20, INPUT_Y - 4, CW + 40, 56, 28, C_PANEL);
-    text(fBody, busy ? "Waiting for reply..." : "Message Claude...", CX + 6, INPUT_Y + 6, C_DIM);
-    circle(CX + CW + 4, INPUT_Y + 24, 20, busy ? C_PANEL : C_ACC);
-    text(fSmall, "A", CX + CW + 4, INPUT_Y + 12, C_WHITE, 1);
-    text(fSmall, "A Type    Y New chat    X Re-pair    ZL/ZR Model    Right stick / drag Scroll    + Quit", 640, 698, C_DIM, 1);
+    // Composer
+    rrect(CHAT_X + 12, INPUT_Y - 4, CHAT_W - 24, 56, 28, C_PANEL);
+    text(fBody, busy ? "Waiting for reply..." : "Message Claude...", CHAT_X + 20, INPUT_Y + 6, C_DIM);
+    circle(CHAT_X + CHAT_W - 32, INPUT_Y + 24, 20, busy ? C_PANEL : C_ACC);
+    text(fSmall, "A", CHAT_X + CHAT_W - 32, INPUT_Y + 12, C_WHITE, 1);
+    
+    text(fSmall, "A Type  Y New  X Pair  ZL/ZR Model  Hold A Voice  Scroll  + Quit", W / 2, 698, C_DIM, 1);
 }
 
 int main(int, char**) {
@@ -426,6 +436,8 @@ int main(int, char**) {
 
         bool wasDown = false, dragged = false, tapInput = false;
         int startY = 0, lastY = 0, prevY = 0;
+        bool holdingA = false;
+        Uint32 holdStart = 0;
         while (appletMainLoop()) {
             padUpdate(&pad);
             u64 down = padGetButtonsDown(&pad), held = padGetButtons(&pad);
@@ -455,7 +467,6 @@ int main(int, char**) {
                 std::lock_guard<std::mutex> g(mu);
                 if (tokenReady) {
                     token = pendTok;
-                    userName = pendUser;
                     tokenReady = false;
                     saveCfg();
                     screen = CHAT;
@@ -474,7 +485,18 @@ int main(int, char**) {
             if (screen == PAIR) {
                 if ((down & HidNpadButton_B) && !token.empty()) { net::stopServer(); screen = CHAT; }
             } else {
-                if (((down & HidNpadButton_A) || tapInput) && !busy) {
+                // Hold A for voice (placeholder)
+                if (held & HidNpadButton_A) {
+                    if (!holdingA) { holdingA = true; holdStart = SDL_GetTicks(); }
+                    if (SDL_GetTicks() - holdStart > 1000) {
+                        // TODO: Implement voice recording
+                    }
+                } else if (holdingA) {
+                    holdingA = false;
+                    // Release A - voice input complete or just a short tap
+                }
+                
+                if (((down & HidNpadButton_A) || tapInput) && !busy && !holdingA) {
                     std::string t;
                     if (askText("Message Claude", t)) sendMsg(t);
                 }

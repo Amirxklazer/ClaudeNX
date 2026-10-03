@@ -10,7 +10,7 @@ bool init();
 void shutdown();
 std::string localIp();
 bool startServer(const std::string& key,
-                 std::function<void(const std::string& token, const std::string& user)> onToken);
+                 std::function<void(const std::string& token)> onToken);
 void stopServer();
 bool serverRunning();
 bool chat(const std::string& token, const std::string& model, const std::string& system,
